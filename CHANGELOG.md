@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Hosted-model defaults.** A new "Apply hosted-model defaults" button in the
+  Hardware profile section, plus a one-time prompt when Profile B is first
+  detected, configures Smart Memory for a memory LLM with a large context:
+  extraction every 8 messages instead of 3, extraction windows of 60/120/200
+  messages sized to 40% of the memory LLM context, 100 long-term and 80 session
+  memories, 8 new entries per type per pass, larger per-tier injection budgets
+  (about 10,600 tokens combined), and an injection refresh period of 3 so
+  provider prompt caches stay warm. The stock defaults were chosen for an 8k
+  local model and remain the defaults; every value stays an ordinary setting.
+- **Sparse extraction frequency.** The simple-mode frequency selector gains a
+  "Sparse (every 8 messages, wide windows)" option for hosted models where
+  fewer, larger passes cost less than many small ones.
+- **Memory LLM context size setting.** Summarization and window sizing used the
+  main API's context size even when the memory LLM was a different model. An
+  advanced-mode setting now declares the memory LLM's own context; 0 keeps the
+  old behaviour.
+- **Token-sized extraction windows.** The per-tier message windows, previously
+  hard-coded at 20/40/100, are now settings, and an optional "window size" share
+  trims each window from the oldest message until it fits the chosen fraction of
+  the memory LLM context. Off by default.
+- **Configurable per-type acceptance cap.** The number of new long-term entries
+  accepted per type per pass can be set explicitly; 0 keeps the profile default.
+
+### Changed
+
+- Slider ceilings raised for hosted models: memory context budget to 32,000
+  (was 8,000), per-tier injection budgets to 12,000 (was 4,000), stored
+  memory caps to 300 (was 50 and 60), extraction interval to 20 (was 10).
+
 ## [1.8.1] - 2026-07-02
 
 ### Added

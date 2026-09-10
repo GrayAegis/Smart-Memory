@@ -107,7 +107,12 @@ import { reportTierTrimStats } from './trim-stats.js';
 // Maximum new entries accepted per type per extraction pass.
 // Profile B (hosted) uses a higher cap because hosted models extract more
 // reliably and rarely over-fire on a single type the way small local models can.
+// An explicit longterm_max_new_per_type setting overrides the profile default,
+// which matters once extraction windows are wide enough to legitimately
+// surface more than four new facts of one type in a single pass.
 function maxNewPerType() {
+  const configured = Number(extension_settings[MODULE_NAME]?.longterm_max_new_per_type) || 0;
+  if (configured > 0) return configured;
   return getHardwareProfile() === 'b' ? 4 : 2;
 }
 

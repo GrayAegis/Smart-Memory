@@ -309,6 +309,28 @@ export const defaultSettings = {
   // 'b': force Profile B (hosted/high-performance behaviour)
   hardware_profile: 'auto',
 
+  // Hosted-model tuning. The stock defaults above were chosen for a local model
+  // in an 8k context. These settings let a hosted memory LLM use the context it
+  // actually has: bigger extraction windows, sized in tokens against the memory
+  // LLM's own context rather than a fixed message count.
+  //
+  // memory_llm_context: context size of the memory LLM in tokens. 0 = assume the
+  //   same context as the main API (previous behaviour).
+  // window_token_share: fraction of the memory LLM context an extraction window
+  //   may fill. Windows are trimmed from the oldest message until they fit.
+  //   0 = message caps only, no token sizing (previous behaviour).
+  // *_window_messages: message caps per tier (previously hard-coded 20/40/100).
+  // longterm_max_new_per_type: new long-term entries accepted per type per pass.
+  //   0 = profile default (2 on Profile A, 4 on Profile B).
+  memory_llm_context: 0,
+  window_token_share: 0,
+  longterm_window_messages: 20,
+  session_window_messages: 40,
+  arcs_window_messages: 100,
+  longterm_max_new_per_type: 0,
+  // Set once the one-time "apply hosted defaults?" prompt has been shown.
+  hosted_defaults_prompted: false,
+
   // Automatically reallocate the per-tier token budget after each extraction pass,
   // based on actual observed demand. Tiers with unused headroom give it to tiers
   // that are trimming content. The configured total budget is treated as a hard cap.
@@ -344,7 +366,39 @@ export const defaultSettings = {
 // ---- Settings mode helpers -----------------------------------------------
 
 // Extraction frequency presets for the simple-mode dropdown.
-const EXTRACTION_FREQUENCY_MAP = { low: 5, medium: 3, high: 1 };
+const EXTRACTION_FREQUENCY_MAP = { sparse: 8, low: 5, medium: 3, high: 1 };
+
+/**
+ * Settings that make sense once the memory LLM is a hosted model with a large
+ * context: fewer extraction passes, each reading a much wider window, larger
+ * stored and injected memory sets, and a longer injection refresh period so
+ * provider-side prompt caching stays warm. Applied in one go by the
+ * "Apply hosted-model defaults" button, or from the one-time prompt shown
+ * when Profile B is first detected. Everything here is a plain setting the
+ * user can still adjust afterwards.
+ */
+export const HOSTED_DEFAULTS = Object.freeze({
+  extraction_frequency: 'sparse',
+  longterm_extract_every: 8,
+  session_extract_every: 8,
+  longterm_window_messages: 60,
+  session_window_messages: 120,
+  arcs_window_messages: 200,
+  window_token_share: 0.4,
+  longterm_max_memories: 100,
+  session_max_memories: 80,
+  longterm_max_new_per_type: 8,
+  longterm_inject_budget: 2000,
+  session_inject_budget: 1500,
+  scene_inject_budget: 800,
+  arcs_inject_budget: 1500,
+  canon_inject_budget: 2000,
+  profiles_inject_budget: 800,
+  relationships_inject_budget: 800,
+  epistemic_inject_budget: 600,
+  state_ledger_inject_budget: 600,
+  injection_refresh_period: 3,
+});
 
 // Fixed proportions for the simplified total-budget slider. Each value is a
 // fraction of the total that gets allocated to that tier. Must sum to 1.0.
@@ -1158,6 +1212,112 @@ export function bindSettingsUI(ctrl) {
     });
 
   updateProfileLabel();
+
+  // ---- Hosted-model tuning ----------------------------------------------
+  const formatShare = (v) =>
+    v > 0 ? `${Math.round(v * 100)}% of memory LLM context` : 'off (message caps only)';
+
+  /**
+   * Binds a plain number input to a setting. Non-numeric input falls back to the
+   * default; values below `min` are clamped and written back to the control.
+   */
+  const bindNumberSetting = (id, key, min = 0) => {
+    $(`#${id}`)
+      .val(s[key] ?? defaultSettings[key])
+      .on('change', function () {
+        const raw = parseInt($(this).val(), 10);
+        const val = Number.isFinite(raw) ? Math.max(min, raw) : defaultSettings[key];
+        extension_settings[MODULE_NAME][key] = val;
+        $(this).val(val);
+        saveSettingsDebounced();
+      });
+  };
+
+  bindNumberSetting('sm_memory_llm_context', 'memory_llm_context');
+  bindNumberSetting('sm_longterm_window_messages', 'longterm_window_messages', 4);
+  bindNumberSetting('sm_session_window_messages', 'session_window_messages', 4);
+  bindNumberSetting('sm_arcs_window_messages', 'arcs_window_messages', 4);
+  bindNumberSetting('sm_longterm_max_new_per_type', 'longterm_max_new_per_type');
+
+  $('#sm_window_token_share')
+    .val(s.window_token_share ?? 0)
+    .on('input', function () {
+      const val = parseFloat($(this).val());
+      const share = Number.isFinite(val) ? val : 0;
+      extension_settings[MODULE_NAME].window_token_share = share;
+      $('#sm_window_token_share_value').text(formatShare(share));
+      saveSettingsDebounced();
+    });
+  $('#sm_window_token_share_value').text(formatShare(s.window_token_share ?? 0));
+
+  /**
+   * Applies HOSTED_DEFAULTS in one go and syncs every control they touch.
+   * Budgets go through the same slider sync as the reset button so the
+   * simple-mode total stays consistent with the per-tier values.
+   */
+  function applyHostedDefaults() {
+    const cur = extension_settings[MODULE_NAME];
+    Object.assign(cur, HOSTED_DEFAULTS);
+    cur.hosted_defaults_prompted = true;
+
+    for (const { setting, slider, display, fmt } of TUNABLE_TIERS) {
+      $(`#${slider}`).val(cur[setting]);
+      $(`#${display}`).text(fmt(cur[setting]));
+    }
+    const total = totalBudgetFromSettings(cur);
+    $('#sm_total_budget').val(total);
+    $('#sm_total_budget_value').text(total);
+
+    $('#sm_extraction_frequency').val(cur.extraction_frequency);
+    for (const key of [
+      'longterm_extract_every',
+      'session_extract_every',
+      'longterm_max_memories',
+      'session_max_memories',
+      'injection_refresh_period',
+    ]) {
+      $(`#sm_${key}`).val(cur[key]);
+      $(`#sm_${key}_value`).text(cur[key]);
+    }
+    for (const key of [
+      'memory_llm_context',
+      'longterm_window_messages',
+      'session_window_messages',
+      'arcs_window_messages',
+      'longterm_max_new_per_type',
+    ]) {
+      $(`#sm_${key}`).val(cur[key]);
+    }
+    $('#sm_window_token_share').val(cur.window_token_share);
+    $('#sm_window_token_share_value').text(formatShare(cur.window_token_share));
+
+    saveSettingsDebounced();
+    reinjectAfterBudgetChange(ctrl.getSelectedCharacterName());
+    toastr.success(
+      `Extraction every ${cur.longterm_extract_every} messages over wide windows, ${total} token memory budget.`,
+      'Hosted-model defaults applied',
+      { timeOut: 6000, positionClass: 'toast-bottom-right' },
+    );
+  }
+
+  $('#sm_apply_hosted_defaults').on('click', applyHostedDefaults);
+
+  // Offer the hosted defaults once when a hosted profile is first seen. The stock
+  // defaults were tuned for an 8k local model and quietly hobble a large model.
+  if (getHardwareProfile() === 'b' && !s.hosted_defaults_prompted) {
+    extension_settings[MODULE_NAME].hosted_defaults_prompted = true;
+    saveSettingsDebounced();
+    toastr.info(
+      'Your memory LLM looks hosted. Click here to apply hosted-model defaults: wider extraction windows, fewer passes, larger budgets. Also available as a button in Smart Memory settings.',
+      'Smart Memory',
+      {
+        timeOut: 20000,
+        extendedTimeOut: 10000,
+        positionClass: 'toast-bottom-right',
+        onclick: applyHostedDefaults,
+      },
+    );
+  }
   syncProfileGating();
 
   // ---- Model test button --------------------------------------------------
@@ -2008,7 +2168,10 @@ export function bindSettingsUI(ctrl) {
     setStatusMessage(`Extracting memories for ${characterName}...`);
     try {
       const context = getContext();
-      const recentMessages = ctrl.getStableExtractionWindowWithFallback(context.chat, 20);
+      const recentMessages = ctrl.getStableExtractionWindowWithFallback(
+        context.chat,
+        ctrl.getWindowSizes().longterm,
+      );
       const count = await extractAndStoreMemories(characterName, recentMessages, setStatusMessage);
       saveSettingsDebounced();
       updateLongTermUI(characterName);
@@ -2124,7 +2287,10 @@ export function bindSettingsUI(ctrl) {
     setStatusMessage('Extracting session memories...');
     try {
       const context = getContext();
-      const recentMessages = ctrl.getStableExtractionWindowWithFallback(context.chat, 40);
+      const recentMessages = ctrl.getStableExtractionWindowWithFallback(
+        context.chat,
+        ctrl.getWindowSizes().session,
+      );
       const count = await extractSessionMemories(recentMessages);
       await injectSessionMemories();
       updateSessionUI();
@@ -2219,9 +2385,11 @@ export function bindSettingsUI(ctrl) {
     try {
       const context = getContext();
       // Use buffered messages since last break if available, else fall back to
-      // the last 40 messages - capped to avoid overflowing the model context.
+      // the session window - capped to avoid overflowing the model context.
       const messages =
-        ctrl.sceneMessageBuffer.length > 0 ? ctrl.sceneMessageBuffer : context.chat.slice(-40);
+        ctrl.sceneMessageBuffer.length > 0
+          ? ctrl.sceneMessageBuffer
+          : ctrl.getStableExtractionWindowWithFallback(context.chat, ctrl.getWindowSizes().session);
       const summary = await summarizeScene(messages);
       if (summary) {
         const history = loadSceneHistory();
@@ -2313,7 +2481,10 @@ export function bindSettingsUI(ctrl) {
     setStatusMessage('Extracting story arcs...');
     try {
       const context = getContext();
-      const recentMessages = ctrl.getStableExtractionWindowWithFallback(context.chat, 100);
+      const recentMessages = ctrl.getStableExtractionWindowWithFallback(
+        context.chat,
+        ctrl.getWindowSizes().arcs,
+      );
       const count = await extractArcs(recentMessages);
       injectArcs();
       updateArcsUI();

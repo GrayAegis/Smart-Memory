@@ -61,8 +61,9 @@ import {
   PROMPT_KEY_RELATIONSHIPS,
   PROMPT_KEY_EPISTEMIC,
   PROMPT_KEY_STATE_LEDGER,
+  estimateTokens,
 } from './constants.js';
-import { memory_sources, abortCurrentMemoryGeneration } from './generate.js';
+import { memory_sources, abortCurrentMemoryGeneration, getMemoryContextSize } from './generate.js';
 import { SlashCommandParser } from '../../../slash-commands/SlashCommandParser.js';
 import { SlashCommand } from '../../../slash-commands/SlashCommand.js';
 import {
@@ -278,7 +279,49 @@ function getStableExtractionWindow(chat, windowSize) {
   if (cutoff <= 0) return [];
 
   const start = Math.max(0, cutoff - windowSize);
-  return chat.slice(start, cutoff);
+  return capWindowToTokens(chat.slice(start, cutoff), 4);
+}
+
+/**
+ * Per-tier extraction window caps in messages. These were hard-coded as
+ * 20/40/100 for local models; hosted models can read far more per pass.
+ * @returns {{longterm: number, session: number, arcs: number}}
+ */
+function getWindowSizes() {
+  const s = extension_settings[MODULE_NAME] ?? {};
+  return {
+    longterm: Math.max(4, Number(s.longterm_window_messages) || 20),
+    session: Math.max(4, Number(s.session_window_messages) || 40),
+    arcs: Math.max(4, Number(s.arcs_window_messages) || 100),
+  };
+}
+
+/**
+ * Trims an extraction window from the oldest message until it fits the
+ * configured share of the memory LLM's context. Message caps alone cannot
+ * size a window sensibly once they are large: sixty long messages may be
+ * fine for one model and overflow another. Always keeps at least minKeep
+ * messages so the model has something to work with. A share of 0 disables
+ * token sizing and leaves the message-capped window untouched.
+ *
+ * @param {Array} messages - Chat slice, oldest first.
+ * @param {number} minKeep - Minimum messages to retain from the end.
+ * @returns {Array}
+ */
+function capWindowToTokens(messages, minKeep) {
+  const share = Number(extension_settings[MODULE_NAME]?.window_token_share) || 0;
+  if (share <= 0 || !Array.isArray(messages) || messages.length === 0) return messages;
+
+  const budget = Math.floor(getMemoryContextSize() * Math.min(share, 0.9));
+  let total = 0;
+  let start = messages.length;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const tokens = estimateTokens(messages[i]?.mes ?? '');
+    if (messages.length - i > minKeep && total + tokens > budget) break;
+    total += tokens;
+    start = i;
+  }
+  return start === 0 ? messages : messages.slice(start);
 }
 
 /**
@@ -314,7 +357,7 @@ function getSmartExtractionWindow(chat, lastCutoff, extractEvery, maxWindow) {
     const minContextStart = cutoff - extractEvery * 2;
     start = Math.max(Math.min(newStart, minContextStart), cutoff - maxWindow, 0);
   }
-  return chat.slice(start, cutoff);
+  return capWindowToTokens(chat.slice(start, cutoff), Math.max(4, extractEvery * 2));
 }
 
 /**
@@ -330,7 +373,7 @@ function getStableExtractionWindowWithFallback(chat, windowSize) {
 
   if (!Array.isArray(chat) || chat.length === 0) return [];
   const start = Math.max(0, chat.length - windowSize);
-  return chat.slice(start);
+  return capWindowToTokens(chat.slice(start), 4);
 }
 
 // Accumulates messages since the last detected scene break. Reset to []
@@ -641,13 +684,13 @@ async function onCharacterMessageRendered(messageId, type) {
             context.chat,
             lastExtractCutoff,
             extractEvery,
-            40,
+            getWindowSizes().session,
           );
           const longtermWindow = getSmartExtractionWindow(
             context.chat,
             lastExtractCutoff,
             extractEvery,
-            20,
+            getWindowSizes().longterm,
           );
 
           // Determine whether to refresh injection slots this pass. When the
@@ -822,7 +865,7 @@ async function onCharacterMessageRendered(messageId, type) {
               // arcs opened earlier in the session, but is capped to avoid overflowing
               // the model's context on long chats. Existing arcs are passed to the
               // prompt so resolution still works even outside this window.
-              const arcWindow = getStableExtractionWindow(context.chat, 100);
+              const arcWindow = getStableExtractionWindow(context.chat, getWindowSizes().arcs);
               const count = await extractArcs(arcWindow, characterName, chatChanged).catch(
                 (err) => {
                   console.error('[SmartMemory] Arc extraction error:', err);
@@ -1544,11 +1587,11 @@ async function onGroupWrapperFinished({ type } = {}) {
             context.chat,
             lastExtractCutoff,
             extractEvery,
-            40,
+            getWindowSizes().session,
           );
           // Scale the raw window by character count so that after per-character
           // filtering each character still gets roughly 20 messages of context.
-          const longtermRawSize = 20 * Math.max(1, roundResponders.size);
+          const longtermRawSize = getWindowSizes().longterm * Math.max(1, roundResponders.size);
           const longtermWindow = getSmartExtractionWindow(
             context.chat,
             lastExtractCutoff,
@@ -1709,7 +1752,7 @@ async function onGroupWrapperFinished({ type } = {}) {
               const arcSummaryCountBefore = settings.arcs_enabled ? loadArcSummaries().length : 0;
 
               if (settings.arcs_enabled && !isFreshStart()) {
-                const arcWindow = getStableExtractionWindow(context.chat, 100);
+                const arcWindow = getStableExtractionWindow(context.chat, getWindowSizes().arcs);
                 const count = await extractArcs(arcWindow, null, chatChanged).catch((err) => {
                   console.error('[SmartMemory] Arc extraction error:', err);
                   return 0;
@@ -1966,6 +2009,7 @@ jQuery(async function () {
     onChatChanged,
     getSelectedCharacterName,
     getStableExtractionWindowWithFallback,
+    getWindowSizes,
   });
   initTooltips();
   initTypePickers();
@@ -2142,9 +2186,13 @@ jQuery(async function () {
         setStatusMessage(`Extracting memories for ${characterName}...`);
         try {
           const context = getContext();
-          const recentLongTerm = getStableExtractionWindowWithFallback(context.chat, 20);
-          const recentSession = getStableExtractionWindowWithFallback(context.chat, 40);
-          const recentArcs = getStableExtractionWindowWithFallback(context.chat, 100);
+          const sizes = getWindowSizes();
+          const recentLongTerm = getStableExtractionWindowWithFallback(
+            context.chat,
+            sizes.longterm,
+          );
+          const recentSession = getStableExtractionWindowWithFallback(context.chat, sizes.session);
+          const recentArcs = getStableExtractionWindowWithFallback(context.chat, sizes.arcs);
           if (!isFreshStart()) {
             await extractAndStoreMemories(characterName, recentLongTerm, setStatusMessage);
             await extractArcs(recentArcs, characterName);

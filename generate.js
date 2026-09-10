@@ -60,6 +60,27 @@ function getGenerationBudget() {
 }
 
 /**
+ * Context size available to the memory LLM, in tokens, less the reserved
+ * response length.
+ *
+ * Historically this was always the main API's context size, which is wrong
+ * whenever the memory LLM is a different model: a hosted extraction model
+ * with a large window was trimmed to whatever the roleplay connection had.
+ * When memory_llm_context is set it wins; 0 keeps the old behaviour.
+ *
+ * @param {number} [responseLength=0] - Tokens to reserve for the response.
+ * @returns {number}
+ */
+export function getMemoryContextSize(responseLength = 0) {
+  const override = Number(extension_settings[MODULE_NAME]?.memory_llm_context) || 0;
+  if (override > 0) {
+    const reserve = responseLength > 0 ? responseLength : 0;
+    return Math.max(1024, override - reserve);
+  }
+  return getMaxContextSize(responseLength);
+}
+
+/**
  * Holds the AbortController for the currently running Ollama or OpenAI-compat
  * fetch, or null when no external generation is in progress. This is module-level
  * rather than per-call so index.js can cancel it from outside the call stack via
@@ -499,7 +520,7 @@ export async function generateMemorySummarize(
       // Trim to the most recent messages that fit within 60% of the context window.
       // Short-term memory is about recent context, not the entire chat history - sending
       // all messages from a long RP would overflow a local model's context completely.
-      priorMessages = trimToBudget(allMessages, getMaxContextSize(responseLength) * 0.6);
+      priorMessages = trimToBudget(allMessages, getMemoryContextSize(responseLength) * 0.6);
     }
 
     let rawDirect;
@@ -539,7 +560,7 @@ export async function generateMemorySummarize(
           role: msg.is_user ? 'user' : 'assistant',
           content: msg.mes ?? '',
         }));
-      const trimmed = trimToBudget(allMessages, getMaxContextSize(responseLength) * 0.6);
+      const trimmed = trimToBudget(allMessages, getMemoryContextSize(responseLength) * 0.6);
       trimmed.push({ role: 'user', content: quietPrompt });
       const params = responseLength > 0 ? { max_tokens: responseLength } : {};
       return await generateWebLlmChatPrompt(trimmed, params);
