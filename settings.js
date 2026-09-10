@@ -114,7 +114,7 @@ import {
 
 /** Set to true while a model test is running to allow cancellation. */
 let modelTestRunning = false;
-import { checkContinuity, generateRepair, injectRepair, clearRepair } from './continuity.js';
+import { checkContinuity } from './continuity.js';
 import {
   getHardwareProfile,
   getEmbeddingBatch,
@@ -136,6 +136,7 @@ import { getTierHWStats, clearTierStats } from './trim-stats.js';
 import { showMemoryGraph } from './graph.js';
 import {
   setStatusMessage,
+  handleContinuityResult,
   updateLongTermUI,
   updateRelationshipHistoryUI,
   updateEpistemicUI,
@@ -3639,58 +3640,14 @@ export function bindSettingsUI(ctrl) {
     const characterName = ctrl.getSelectedCharacterName();
     $(this).prop('disabled', true);
     setStatusMessage('Checking continuity...');
-    $('#sm_continuity_result').hide().empty();
     try {
       const contradictions = await checkContinuity(characterName);
-      if (contradictions.length === 0) {
-        $('#sm_continuity_result')
-          .addClass('sm_continuity_clean')
-          .removeClass('sm_continuity_warn')
-          .text('No contradictions found.')
-          .show();
-        setStatusMessage('Continuity OK.');
-      } else {
-        const $result = $('#sm_continuity_result')
-          .addClass('sm_continuity_warn')
-          .removeClass('sm_continuity_clean');
-        $result.empty();
-        $result.append('<b>Contradictions found:</b>');
-        const $ul = $('<ul>');
-        contradictions.forEach((c) => $ul.append($('<li>').text(c)));
-        $result.append($ul).show();
-        setStatusMessage(
-          `${contradictions.length} contradiction${contradictions.length === 1 ? '' : 's'} found.`,
-        );
-
-        // If auto-repair is on, generate a corrective note and inject it for
-        // the next AI turn. The note is cleared automatically once that response
-        // is rendered by onCharacterMessageRendered.
-        if (extension_settings[MODULE_NAME].continuity_auto_repair) {
-          setStatusMessage('Generating repair...');
-          try {
-            const note = await generateRepair(contradictions, characterName);
-            injectRepair(note);
-            const $repairBlock = $('<div class="sm_repair_queued">');
-            $repairBlock.append($('<p>').text('Correction queued for next response:'));
-            $repairBlock.append($('<p class="sm_repair_note">').text(note));
-            const $cancel = $(
-              '<button class="menu_button sm_repair_cancel">Cancel correction</button>',
-            );
-            $cancel.on('click', () => {
-              clearRepair();
-              $repairBlock.remove();
-              setStatusMessage('Correction cancelled.');
-            });
-            $repairBlock.append($cancel);
-            $result.append($repairBlock);
-            setStatusMessage('Correction queued.');
-            toastr.info('Correction queued for next response.', 'Smart Memory');
-          } catch (repairErr) {
-            console.error('[SmartMemory] Repair generation failed:', repairErr);
-            setStatusMessage('Repair failed - see console.');
-          }
-        }
-      }
+      await handleContinuityResult(contradictions, characterName);
+      setStatusMessage(
+        contradictions.length === 0
+          ? 'Continuity OK.'
+          : `${contradictions.length} contradiction${contradictions.length === 1 ? '' : 's'} found.`,
+      );
     } catch (err) {
       showError('Continuity check', err);
       setStatusMessage('');

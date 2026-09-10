@@ -128,6 +128,16 @@ import {
   STATE_CARD_FIELDS,
   STATE_CARD_TYPES,
 } from './state-ledger.js';
+import {
+  loadContradictions,
+  saveContradictions,
+  clearContradictions,
+  lastContinuityCheckAt,
+  loadRepair,
+  generateRepair,
+  injectRepair,
+  clearRepair,
+} from './continuity.js';
 
 // ---- Local helpers (not exported) ----------------------------------------
 
@@ -1918,4 +1928,231 @@ export function updateEpistemicUI(characterName) {
   }
 
   $list.append($details);
+}
+
+// ---- Continuity panel -------------------------------------------------------
+
+// Character the panel's Generate correction should build against. Set by
+// every render so the delegated handlers below always have a current value.
+let continuityPanelCharacter = null;
+let continuityPanelBound = false;
+
+/**
+ * Reads the contradiction list back out of the panel's textareas.
+ * @returns {string[]}
+ */
+function readContradictionsFromPanel() {
+  return $('#sm_continuity_result .sm_contradiction_text')
+    .map(function () {
+      return $(this).val();
+    })
+    .get();
+}
+
+/**
+ * Renders the continuity panel from what is stored for this chat: the last
+ * check's contradictions as editable rows, and the queued correction as an
+ * editable note. Everything the user changes here is what Generate correction
+ * and the next response actually use.
+ *
+ * @param {string|null} characterName
+ */
+export function renderContinuityPanel(characterName) {
+  continuityPanelCharacter = characterName ?? continuityPanelCharacter;
+  const $result = $('#sm_continuity_result');
+  if (!$result.length) return;
+
+  const items = loadContradictions();
+  const repair = loadRepair();
+  const checkedAt = lastContinuityCheckAt();
+
+  $result.empty().removeClass('sm_continuity_clean sm_continuity_warn');
+
+  if (!items.length && !repair) {
+    if (!checkedAt) {
+      $result.hide();
+      return;
+    }
+    $result.addClass('sm_continuity_clean').text('No contradictions found.').show();
+    return;
+  }
+
+  $result.addClass(items.length ? 'sm_continuity_warn' : 'sm_continuity_clean');
+
+  if (items.length) {
+    $result.append(
+      $('<div class="sm_continuity_head">').append(
+        $('<b>').text(
+          `${items.length} contradiction${items.length === 1 ? '' : 's'} from the last check`,
+        ),
+        $('<span class="sm-dim">').text(' - edit, remove, or add before correcting'),
+      ),
+    );
+    const $list = $('<div class="sm_contradiction_list">');
+    for (const [i, text] of items.entries()) {
+      const $row = $('<div class="sm_contradiction_row">').attr('data-index', i);
+      $row.append(
+        $('<textarea class="text_pole sm_contradiction_text" rows="2">').val(text),
+        $(
+          '<button class="menu_button sm_contradiction_delete" title="Remove this contradiction"><i class="fa-solid fa-trash"></i></button>',
+        ),
+      );
+      $list.append($row);
+    }
+    $result.append($list);
+  }
+
+  const $actions = $('<div class="sm-btn-row sm_continuity_actions">');
+  $actions.append(
+    $(
+      '<button class="menu_button sm_contradiction_add" title="Add a contradiction the check missed">Add</button>',
+    ),
+  );
+  if (items.length) {
+    $actions.append(
+      $(
+        '<button class="menu_button sm_generate_correction" title="Build a corrective note for the next response from the list as edited">Generate correction</button>',
+      ),
+      $(
+        '<button class="menu_button sm_contradictions_clear" title="Forget these findings and cancel any queued correction">Dismiss all</button>',
+      ),
+    );
+  }
+  $result.append($actions);
+
+  if (repair) {
+    const $block = $('<div class="sm_repair_queued">');
+    $block.append($('<p>').text('Correction queued for the next response. Edit it here:'));
+    $block.append($('<textarea class="text_pole sm_repair_edit" rows="3">').val(repair));
+    $block.append(
+      $('<div class="sm-btn-row">').append(
+        $('<button class="menu_button sm_repair_apply">Apply edit</button>'),
+        $('<button class="menu_button sm_repair_cancel">Cancel correction</button>'),
+      ),
+    );
+    $result.append($block);
+  }
+
+  $result.show();
+  bindContinuityPanel();
+}
+
+/** Binds the panel's handlers once, delegated so re-renders keep working. */
+function bindContinuityPanel() {
+  if (continuityPanelBound) return;
+  continuityPanelBound = true;
+  const $result = $('#sm_continuity_result');
+
+  $result.on('change', '.sm_contradiction_text', () => {
+    saveContradictions(readContradictionsFromPanel());
+  });
+
+  $result.on('click', '.sm_contradiction_delete', function () {
+    const list = readContradictionsFromPanel();
+    const index = Number($(this).closest('.sm_contradiction_row').attr('data-index'));
+    list.splice(index, 1);
+    saveContradictions(list);
+    if (!list.length) setContinuityBadge(0);
+    renderContinuityPanel(continuityPanelCharacter);
+  });
+
+  $result.on('click', '.sm_contradiction_add', () => {
+    // Keep in-progress edits, then append a blank row for the user to fill in.
+    saveContradictions([...readContradictionsFromPanel(), '(new contradiction)']);
+    renderContinuityPanel(continuityPanelCharacter);
+    $('#sm_continuity_result .sm_contradiction_text').last().trigger('focus').trigger('select');
+  });
+
+  $result.on('click', '.sm_contradictions_clear', () => {
+    clearContradictions();
+    clearRepair();
+    setContinuityBadge(0);
+    renderContinuityPanel(continuityPanelCharacter);
+  });
+
+  $result.on('click', '.sm_generate_correction', async function () {
+    const list = readContradictionsFromPanel()
+      .map((c) => c.trim())
+      .filter(Boolean);
+    saveContradictions(list);
+    if (!list.length) return;
+    const $btn = $(this).prop('disabled', true);
+    setStatusMessage('Generating correction...');
+    try {
+      const note = await generateRepair(list, continuityPanelCharacter);
+      if (!note) throw new Error('The model returned an empty correction.');
+      injectRepair(note);
+      setStatusMessage('Correction queued.');
+      toastr.info('Correction queued for the next response.', 'Smart Memory', {
+        timeOut: 4000,
+        positionClass: 'toast-bottom-right',
+      });
+    } catch (err) {
+      console.error('[SmartMemory] Correction generation failed:', err);
+      setStatusMessage('Correction failed - see console.');
+      toastr.error(String(err?.message ?? err), 'Smart Memory');
+    } finally {
+      $btn.prop('disabled', false);
+      renderContinuityPanel(continuityPanelCharacter);
+    }
+  });
+
+  $result.on('click', '.sm_repair_apply', () => {
+    const text = String($('#sm_continuity_result .sm_repair_edit').val() ?? '').trim();
+    if (text) injectRepair(text);
+    else clearRepair();
+    setStatusMessage(text ? 'Correction updated.' : 'Correction cancelled.');
+    renderContinuityPanel(continuityPanelCharacter);
+  });
+
+  $result.on('click', '.sm_repair_cancel', () => {
+    clearRepair();
+    setStatusMessage('Correction cancelled.');
+    renderContinuityPanel(continuityPanelCharacter);
+  });
+}
+
+/**
+ * Shared follow-up for every continuity check: badge, optional auto-repair,
+ * then render the editable panel. Replaces four copies of the same code in
+ * the manual button, the solo and group automatic checks, and /sm-check.
+ *
+ * @param {string[]} contradictions
+ * @param {string|null} characterName
+ * @param {{notify?: boolean}} [options] - Show toasts. Off for /sm-check, which has its own.
+ */
+export async function handleContinuityResult(
+  contradictions,
+  characterName,
+  { notify = true } = {},
+) {
+  const settings = extension_settings[MODULE_NAME];
+  setContinuityBadge(contradictions.length);
+
+  if (contradictions.length && settings.continuity_auto_repair) {
+    try {
+      const note = await generateRepair(contradictions, characterName);
+      if (note) injectRepair(note);
+      if (notify) {
+        toastr.info(
+          `${contradictions.length} contradiction${contradictions.length === 1 ? '' : 's'} found - correction queued for the next response. Edit either in Smart Memory settings.`,
+          'Smart Memory',
+          { timeOut: 8000, positionClass: 'toast-bottom-right' },
+        );
+      }
+    } catch (err) {
+      console.error('[SmartMemory] Auto-repair failed:', err);
+      if (notify) {
+        toastr.warning('Correction could not be generated - check console.', 'Smart Memory');
+      }
+    }
+  } else if (contradictions.length && notify) {
+    toastr.warning(
+      `${contradictions.length} contradiction${contradictions.length === 1 ? '' : 's'} found. Review or edit them in Smart Memory settings.`,
+      'Smart Memory',
+      { timeOut: 8000, positionClass: 'toast-bottom-right' },
+    );
+  }
+
+  renderContinuityPanel(characterName);
 }

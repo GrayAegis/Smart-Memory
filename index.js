@@ -101,13 +101,7 @@ import {
   saveGroupPersistentArcs,
   pruneOrphanedGroupArcs,
 } from './arcs.js';
-import {
-  checkContinuity,
-  generateRepair,
-  injectRepair,
-  clearRepair,
-  loadAndInjectRepair,
-} from './continuity.js';
+import { checkContinuity, clearRepair, loadAndInjectRepair } from './continuity.js';
 import {
   clearEmbeddingCache,
   getHardwareProfile,
@@ -156,6 +150,8 @@ import {
   updateEntityPanel,
   updateEmbeddingNotice,
   setContinuityBadge,
+  handleContinuityResult,
+  renderContinuityPanel,
   showSearchResults,
   initTooltips,
   initTypePickers,
@@ -1012,51 +1008,7 @@ async function onCharacterMessageRendered(messageId, type) {
         continuityCheckRunning = true;
         const continuityHandle = startActivityLoader(settings, 'Checking continuity...');
         checkContinuity(characterName)
-          .then(async (contradictions) => {
-            setContinuityBadge(contradictions.length);
-            // Populate the result panel so the user can read the contradictions
-            // when they open the settings panel - same display as the manual check.
-            const $result = $('#sm_continuity_result');
-            $result.empty().removeClass('sm_continuity_clean sm_continuity_warn');
-            if (contradictions.length === 0) {
-              $result.addClass('sm_continuity_clean').text('No contradictions found.').show();
-            } else {
-              $result.addClass('sm_continuity_warn');
-              $result.append('<b>Contradictions found:</b>');
-              const $ul = $('<ul>');
-              contradictions.forEach((c) => $ul.append($('<li>').text(c)));
-              $result.append($ul).show();
-              if (getSettings().continuity_auto_repair) {
-                try {
-                  const note = await generateRepair(contradictions, characterName);
-                  injectRepair(note);
-                  const $repairBlock = $('<div class="sm_repair_queued">');
-                  $repairBlock.append($('<p>').text('Correction queued for next response:'));
-                  $repairBlock.append($('<p class="sm_repair_note">').text(note));
-                  const $cancel = $(
-                    '<button class="menu_button sm_repair_cancel">Cancel correction</button>',
-                  );
-                  $cancel.on('click', () => {
-                    clearRepair();
-                    $repairBlock.remove();
-                  });
-                  $repairBlock.append($cancel);
-                  $result.append($repairBlock);
-                  toastr.info(
-                    `${contradictions.length} contradiction${contradictions.length === 1 ? '' : 's'} found - correction queued for next response.`,
-                    'Smart Memory',
-                  );
-                } catch (repairErr) {
-                  console.error('[SmartMemory] Auto-repair failed:', repairErr);
-                  $result.append(
-                    $('<p class="sm_repair_queued">').text(
-                      'Correction could not be generated - check console.',
-                    ),
-                  );
-                }
-              }
-            }
-          })
+          .then((contradictions) => handleContinuityResult(contradictions, characterName))
           .catch((err) => {
             console.error('[SmartMemory] Auto-continuity check failed:', err);
           })
@@ -1138,6 +1090,7 @@ async function onChatChangedImpl() {
   // Bring hidden state in line with this chat's summary boundary. Idempotent,
   // and it only saves when something actually changes.
   await applyCompactionHiding();
+  renderContinuityPanel(getCurrentCharacterName());
 
   // Remove group arc stores for groups that no longer exist. Runs once per
   // chat load; cheap enough that it does not need further throttling.
@@ -1901,13 +1854,7 @@ async function onGroupWrapperFinished({ type } = {}) {
         continuityCheckRunning = true;
         const continuityHandle = startActivityLoader(settings, 'Checking continuity...');
         checkContinuity(lastResponder)
-          .then(async (contradictions) => {
-            setContinuityBadge(contradictions.length);
-            if (contradictions.length > 0 && getSettings().continuity_auto_repair) {
-              const note = await generateRepair(contradictions, lastResponder);
-              injectRepair(note);
-            }
-          })
+          .then((contradictions) => handleContinuityResult(contradictions, lastResponder))
           .catch((err) => {
             console.error('[SmartMemory] Auto-continuity check failed:', err);
           })
@@ -2126,6 +2073,7 @@ jQuery(async function () {
         const characterName = getCurrentCharacterName();
         if (!characterName) return 'No character active.';
         const contradictions = await checkContinuity(characterName);
+        await handleContinuityResult(contradictions, characterName, { notify: false });
         if (contradictions.length === 0) {
           toastr.info('No contradictions found.', 'Smart Memory', {
             timeOut: 4000,

@@ -112,6 +112,63 @@ function gatherEstablishedFacts(characterName) {
 
 // chatMetadata key under META_KEY where the pending repair note is stored.
 const REPAIR_KEY = 'pendingRepair';
+// chatMetadata keys for the last check's findings, so they survive a reload
+// and can be edited before a correction is generated from them.
+const CONTRADICTIONS_KEY = 'contradictions';
+const CHECKED_AT_KEY = 'contradictionsCheckedAt';
+
+/**
+ * Returns the contradictions recorded by the last check for this chat.
+ * @returns {string[]}
+ */
+export function loadContradictions() {
+  const list = getContext().chatMetadata?.[META_KEY]?.[CONTRADICTIONS_KEY];
+  return Array.isArray(list) ? list.filter((c) => typeof c === 'string') : [];
+}
+
+/**
+ * Timestamp of the last check, or null if none has run in this chat.
+ * @returns {number|null}
+ */
+export function lastContinuityCheckAt() {
+  return getContext().chatMetadata?.[META_KEY]?.[CHECKED_AT_KEY] ?? null;
+}
+
+/**
+ * Persists the contradiction list, dropping blank entries. This is what the
+ * panel edits, and what Generate correction reads, so an edit here changes
+ * the correction that gets built.
+ * @param {string[]} items
+ */
+export function saveContradictions(items) {
+  const context = getContext();
+  if (!context.chatMetadata) return;
+  if (!context.chatMetadata[META_KEY]) context.chatMetadata[META_KEY] = {};
+  const clean = (Array.isArray(items) ? items : [])
+    .map((c) => String(c ?? '').trim())
+    .filter(Boolean);
+  context.chatMetadata[META_KEY][CONTRADICTIONS_KEY] = clean;
+  context.chatMetadata[META_KEY][CHECKED_AT_KEY] = Date.now();
+  context.saveMetadata()?.catch(console.error);
+}
+
+/** Forgets the last check's findings for this chat. */
+export function clearContradictions() {
+  const context = getContext();
+  const meta = context.chatMetadata?.[META_KEY];
+  if (!meta) return;
+  delete meta[CONTRADICTIONS_KEY];
+  delete meta[CHECKED_AT_KEY];
+  context.saveMetadata()?.catch(console.error);
+}
+
+/**
+ * Returns the pending repair note for this chat, or null.
+ * @returns {string|null}
+ */
+export function loadRepair() {
+  return getContext().chatMetadata?.[META_KEY]?.[REPAIR_KEY] ?? null;
+}
 
 /**
  * Runs a continuity check against the last AI message in the current chat.
@@ -143,7 +200,10 @@ export async function checkContinuity(characterName) {
 
     smLog('[SmartMemory] Continuity check response:', response);
 
-    return parseContradictions(response);
+    const contradictions = parseContradictions(response);
+    // Record the findings so the panel can show and edit them after a reload.
+    saveContradictions(contradictions);
+    return contradictions;
   } catch (err) {
     console.error('[SmartMemory] Continuity check failed:', err);
     throw err;

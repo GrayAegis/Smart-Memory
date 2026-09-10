@@ -52,6 +52,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   hid. Hidden messages stay in the chat file and are inherited by branches.
   Fresh Start and Forget This Chat restore them before wiping the summary.
 
+- **Editable contradictions and corrections.** The continuity checker's
+  findings are now saved with the chat and shown as an editable list: reword
+  a contradiction, remove one the model got wrong, add one it missed, or
+  dismiss them all. Generate correction builds the corrective note from the
+  list as edited, whether or not auto-repair is on, and a queued correction
+  can be edited and re-applied before the next response instead of only
+  cancelled. Previously the list was rendered once as plain text and lost on
+  reload, and the note could only be cancelled.
+
 ### Fixed
 
 - **"No message generated" on the main API with reasoning models.** The main-API
