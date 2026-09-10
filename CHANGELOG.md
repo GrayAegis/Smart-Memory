@@ -42,6 +42,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   character copies a chat's store the other way. Switching scope moves and
   deletes nothing.
 
+### Fixed
+
+- **"No message generated" on the main API with reasoning models.** The main-API
+  extraction path passed each tier's response length (400 to 600 tokens) straight
+  through as the generation cap. A hosted model that thinks before answering spent
+  the whole cap on reasoning, SillyTavern stripped it, and nothing visible was left.
+  The main path now floors the cap to the Memory LLM generation budget, as the
+  other sources already did, and the error names the likely cause when it still
+  happens.
+
 ### Changed
 
 - Slider ceilings raised for hosted models: memory context budget to 32,000

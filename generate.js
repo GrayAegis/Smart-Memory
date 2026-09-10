@@ -60,6 +60,57 @@ function getGenerationBudget() {
 }
 
 /**
+ * Effective generation cap for an extraction call.
+ *
+ * Each tier passes a small response length (400 to 600 tokens) that describes
+ * how much *visible* output it wants. A hosted model that reasons before it
+ * answers spends tokens on thinking first, and if the cap is the tier length
+ * the reasoning eats all of it and no text comes back at all. The other
+ * sources already floor the cap to the generation budget; this makes the main
+ * API and connection-profile paths do the same. -1 means unlimited.
+ *
+ * @param {number} responseLength - Tier response length.
+ * @returns {number} Token cap, or -1 for unlimited.
+ */
+function extractionLimit(responseLength) {
+  const budget = getGenerationBudget();
+  if (budget === -1) return -1;
+  return Math.max(responseLength > 0 ? responseLength : 0, budget);
+}
+
+/**
+ * Main-API extraction call with a cap that survives reasoning models and an
+ * error message that says what to do when nothing visible comes back.
+ *
+ * instructOverride is not passed: upstream's `instruct: false` was never a
+ * real generateRaw parameter, and the parsers only match tagged lines, so
+ * instruct wrapping on text-completion mains is harmless.
+ *
+ * @param {string} prompt
+ * @param {number} responseLength
+ * @returns {Promise<string>}
+ */
+async function generateMain(prompt, responseLength) {
+  const limit = extractionLimit(responseLength);
+  try {
+    return await generateRaw({
+      prompt,
+      quietToLoud: false,
+      responseLength: limit > 0 ? limit : null,
+    });
+  } catch (err) {
+    if (String(err?.message ?? '').includes('No message generated')) {
+      throw new Error(
+        'The main API returned no visible text. If this model reasons or thinks before answering, ' +
+          'raise the Memory LLM generation budget so the reply is not spent entirely on thinking, ' +
+          'or route memory work through a connection profile with thinking turned off.',
+      );
+    }
+    throw err;
+  }
+}
+
+/**
  * Context size available to the memory LLM, in tokens, less the reserved
  * response length.
  *
@@ -413,25 +464,23 @@ export async function generateMemoryExtract(prompt, { responseLength = 600 } = {
   } else if (source === memory_sources.openai_compatible) {
     raw = await generateOpenAICompat(prompt, []);
   } else if (source === memory_sources.connection_profile) {
-    raw = await generateWithConnectionProfile(prompt, [], responseLength);
+    raw = await generateWithConnectionProfile(prompt, [], extractionLimit(responseLength));
   } else if (source === memory_sources.webllm) {
     if (!isWebLlmSupported()) {
       console.warn(
         `[${MODULE_NAME}] WebLLM source selected but WebLLM is not available, falling back to main`,
       );
-      raw = await generateRaw({ prompt, instruct: false, quietToLoud: false, responseLength });
+      raw = await generateMain(prompt, responseLength);
     } else {
       const messages = [{ role: 'user', content: prompt }];
       const params = responseLength > 0 ? { max_tokens: responseLength } : {};
       raw = await generateWebLlmChatPrompt(messages, params);
     }
   } else {
-    // Default: main API. instruct:false prevents the instruct template from
-    // wrapping the extraction prompt, which is important for our tagged-line
-    // output format ([type:score:expiration] lines). This is a supported
-    // generateRaw parameter in SillyTavern. The parsers are also resilient -
-    // they only match valid tagged lines and ignore everything else - so even
-    // if this were silently ignored the output would still parse correctly.
+    // Default: main API, with the cap floored to the generation budget so
+    // reasoning models still produce visible output. The parsers only match
+    // valid tagged lines and ignore everything else, so any wrapping the main
+    // API applies does not affect parsing.
     raw = await generateRaw({ prompt, instruct: false, quietToLoud: false, responseLength });
   }
 
