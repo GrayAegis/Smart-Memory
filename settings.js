@@ -55,6 +55,11 @@ import {
 import { memory_sources, fetchOllamaModels } from './generate.js';
 import { runCompaction, injectSummary, loadAndInjectSummary } from './compaction.js';
 import {
+  applyCompactionHiding,
+  restoreCompactionHidden,
+  countSmartMemoryHidden,
+} from './hiding.js';
+import {
   extractAndStoreMemories,
   consolidateMemories,
   injectMemories,
@@ -185,6 +190,9 @@ export const defaultSettings = {
   compaction_enabled: true,
   compaction_threshold: 80,
   compaction_keep_recent: 10,
+  // Hide messages the summary already stands in for, once extraction has read
+  // them, leaving compaction_keep_recent messages visible. Off by default.
+  compaction_hide_enabled: false,
   compaction_response_length: 2000,
   compaction_position: extension_prompt_types.IN_PROMPT,
   compaction_depth: 0,
@@ -1678,6 +1686,54 @@ export function bindSettingsUI(ctrl) {
     updateTokenDisplay();
   });
 
+  // ---- Compaction-coupled hiding -------------------------------------------
+  const updateHiddenCount = () => {
+    const n = countSmartMemoryHidden();
+    $('#sm_hidden_count').text(n ? `${n} hidden by Smart Memory` : 'nothing hidden');
+  };
+
+  $('#sm_compaction_hide_enabled')
+    .prop('checked', !!s.compaction_hide_enabled)
+    .on('change', async function () {
+      extension_settings[MODULE_NAME].compaction_hide_enabled = $(this).prop('checked');
+      saveSettingsDebounced();
+      // Turning it on hides what is already covered; turning it off restores ours.
+      const result = await applyCompactionHiding();
+      updateHiddenCount();
+      if (result.hidden || result.restored) {
+        toastr.info(`Hid ${result.hidden}, restored ${result.restored}.`, 'Smart Memory', {
+          timeOut: 4000,
+          positionClass: 'toast-bottom-right',
+        });
+      }
+    });
+
+  $('#sm_compaction_keep_recent')
+    .val(s.compaction_keep_recent ?? defaultSettings.compaction_keep_recent)
+    .on('change', async function () {
+      const raw = parseInt($(this).val(), 10);
+      const val = Number.isFinite(raw) ? Math.max(0, raw) : defaultSettings.compaction_keep_recent;
+      extension_settings[MODULE_NAME].compaction_keep_recent = val;
+      $(this).val(val);
+      saveSettingsDebounced();
+      await applyCompactionHiding();
+      updateHiddenCount();
+    });
+
+  $('#sm_restore_hidden').on('click', async function () {
+    const n = await restoreCompactionHidden();
+    updateHiddenCount();
+    toastr.info(
+      n
+        ? `Restored ${n} messages. They will be hidden again after the next summary.`
+        : 'Nothing to restore.',
+      'Smart Memory',
+      { timeOut: 5000, positionClass: 'toast-bottom-right' },
+    );
+  });
+
+  updateHiddenCount();
+
   $('#sm_summarize_now').on('click', async function () {
     if (isCatchUpRunning()) return;
     if (ctrl.compactionRunning) return;
@@ -3068,6 +3124,8 @@ export function bindSettingsUI(ctrl) {
     const context = getContext();
     if (!context.chatMetadata) context.chatMetadata = {};
     if (!context.chatMetadata[META_KEY]) context.chatMetadata[META_KEY] = {};
+    // Nothing may stay hidden once the summary that covered it is gone.
+    await restoreCompactionHidden();
     // Wipe short-term summary state.
     delete context.chatMetadata[META_KEY].summary;
     delete context.chatMetadata[META_KEY].summaryEnd;
@@ -3134,6 +3192,8 @@ export function bindSettingsUI(ctrl) {
     const context = getContext();
     if (!context.chatMetadata) context.chatMetadata = {};
     if (!context.chatMetadata[META_KEY]) context.chatMetadata[META_KEY] = {};
+    // Nothing may stay hidden once the summary that covered it is gone.
+    await restoreCompactionHidden();
     delete context.chatMetadata[META_KEY].summary;
     delete context.chatMetadata[META_KEY].summaryEnd;
     delete context.chatMetadata[META_KEY].summaryUpdated;

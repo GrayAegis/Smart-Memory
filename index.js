@@ -73,6 +73,7 @@ import {
 } from '../../../slash-commands/SlashCommandArgument.js';
 
 import { shouldCompact, runCompaction, injectSummary, loadAndInjectSummary } from './compaction.js';
+import { applyCompactionHiding } from './hiding.js';
 import {
   extractAndStoreMemories,
   consolidateMemories,
@@ -1133,6 +1134,10 @@ async function onChatChangedImpl() {
   // Migrate chat data first - no character name needed, operates on chatMetadata.
   // Fast no-op when the container is already at the current schema version.
   await ensureChatMigrated();
+
+  // Bring hidden state in line with this chat's summary boundary. Idempotent,
+  // and it only saves when something actually changes.
+  await applyCompactionHiding();
 
   // Remove group arc stores for groups that no longer exist. Runs once per
   // chat load; cheap enough that it does not need further throttling.

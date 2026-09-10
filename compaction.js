@@ -39,6 +39,7 @@ import { generateMemorySummarize } from './generate.js';
 import { getContext, extension_settings } from '../../../extensions.js';
 import { getTokenCountAsync } from '../../../tokenizers.js';
 import { estimateTokens, MODULE_NAME, PROMPT_KEY_SHORT, META_KEY } from './constants.js';
+import { applyCompactionHiding } from './hiding.js';
 import { buildSummaryPrompt, buildUpdateSummaryPrompt } from './prompts.js';
 import { formatSummary } from './parsers.js';
 import { loadCharacterMemories } from './longterm.js';
@@ -226,6 +227,9 @@ export async function runCompaction({ includeLastMessage = false } = {}) {
         ? context.chat.length - 1
         : context.chat.length;
     await context.saveMetadata();
+
+    // Messages the summary now stands in for can leave the prompt.
+    await applyCompactionHiding();
 
     return summary;
   } catch (err) {

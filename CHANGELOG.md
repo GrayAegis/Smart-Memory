@@ -42,6 +42,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   character copies a chat's store the other way. Switching scope moves and
   deletes nothing.
 
+- **Context trimming.** A Short-term option, off by default, hides messages
+  once the rolling summary covers them and extraction has read them, keeping a
+  configurable verbatim tail visible. Smart Memory never removed anything from
+  the prompt before; on a small local context SillyTavern's own limit did the
+  trimming, but on a large hosted context nothing falls off and every turn
+  re-sends the whole history. Hides are flagged as Smart Memory's own, so
+  messages you hid yourself are untouched and Restore un-hides only what it
+  hid. Hidden messages stay in the chat file and are inherited by branches.
+  Fresh Start and Forget This Chat restore them before wiping the summary.
+
 ### Fixed
 
 - **"No message generated" on the main API with reasoning models.** The main-API
