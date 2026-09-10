@@ -100,6 +100,12 @@ import {
 } from './scenes.js';
 import { extractArcs, injectArcs, clearArcs, clearArcSummaries, loadArcSummaries } from './arcs.js';
 import { runModelTest } from './model-test.js';
+import {
+  memory_scopes,
+  getMemoryScope,
+  carryOverFromCharacter,
+  promoteToCharacter,
+} from './scope.js';
 
 /** Set to true while a model test is running to allow cancellation. */
 let modelTestRunning = false;
@@ -322,6 +328,11 @@ export const defaultSettings = {
   // *_window_messages: message caps per tier (previously hard-coded 20/40/100).
   // longterm_max_new_per_type: new long-term entries accepted per type per pass.
   //   0 = profile default (2 on Profile A, 4 on Profile B).
+  // Where per-character memory lives. 'character' follows the character into
+  // every chat (upstream behaviour). 'chat' keeps it in chat metadata: new chats
+  // start empty, branches inherit, nothing crosses chats unless carried over.
+  memory_scope: 'character',
+
   memory_llm_context: 0,
   window_token_share: 0,
   longterm_window_messages: 20,
@@ -1301,6 +1312,79 @@ export function bindSettingsUI(ctrl) {
   }
 
   $('#sm_apply_hosted_defaults').on('click', applyHostedDefaults);
+
+  // ---- Memory scope -------------------------------------------------------
+  const syncScopeUI = () => {
+    const chatScoped = getMemoryScope() === memory_scopes.chat;
+    $('#smart_memory_settings .sm-chat-scope-only').toggle(chatScoped);
+  };
+
+  $('#sm_memory_scope')
+    .val(getMemoryScope())
+    .on('change', function () {
+      const value =
+        $(this).val() === memory_scopes.chat ? memory_scopes.chat : memory_scopes.character;
+      extension_settings[MODULE_NAME].memory_scope = value;
+      saveSettingsDebounced();
+      syncScopeUI();
+      // Every tier re-reads from the newly selected container.
+      ctrl.clearAllInjections();
+      ctrl.onChatChanged();
+      toastr.info(
+        value === memory_scopes.chat
+          ? 'Memory is now scoped to this chat. New chats start empty; use Carry over from character to bring memories in.'
+          : 'Memory now follows the character across chats.',
+        'Smart Memory',
+        { timeOut: 7000, positionClass: 'toast-bottom-right' },
+      );
+    });
+  syncScopeUI();
+
+  $('#sm_carry_over_button').on('click', async function () {
+    const characterName = ctrl.getSelectedCharacterName();
+    if (!characterName) {
+      toastr.warning('No character active.', 'Smart Memory');
+      return;
+    }
+    const ok = await callGenericPopup(
+      `Copy the character-level memories for "${characterName}" into this chat?\n\nThis replaces what the chat currently holds for that character.`,
+      POPUP_TYPE.CONFIRM,
+    );
+    if (!ok) return;
+    const count = carryOverFromCharacter(characterName);
+    if (count < 0) {
+      toastr.info('Nothing is stored at the character level yet.', 'Smart Memory');
+      return;
+    }
+    ctrl.clearAllInjections();
+    ctrl.onChatChanged();
+    toastr.success(`Carried ${count} entries into this chat.`, 'Smart Memory', {
+      timeOut: 5000,
+      positionClass: 'toast-bottom-right',
+    });
+  });
+
+  $('#sm_promote_button').on('click', async function () {
+    const characterName = ctrl.getSelectedCharacterName();
+    if (!characterName) {
+      toastr.warning('No character active.', 'Smart Memory');
+      return;
+    }
+    const ok = await callGenericPopup(
+      `Copy this chat's memories for "${characterName}" up to the character level?\n\nThis replaces the character-level store, so future chats that carry over will receive this chat's version.`,
+      POPUP_TYPE.CONFIRM,
+    );
+    if (!ok) return;
+    const count = promoteToCharacter(characterName);
+    if (count < 0) {
+      toastr.info('This chat holds no memories for that character yet.', 'Smart Memory');
+      return;
+    }
+    toastr.success(`Promoted ${count} entries to the character level.`, 'Smart Memory', {
+      timeOut: 5000,
+      positionClass: 'toast-bottom-right',
+    });
+  });
 
   // Offer the hosted defaults once when a hosted profile is first seen. The stock
   // defaults were tuned for an 8k local model and quietly hobble a large model.
@@ -3029,7 +3113,9 @@ export function bindSettingsUI(ctrl) {
     const nameLabel = characterName ? `"${characterName}"` : 'this character';
     if (
       !(await callGenericPopup(
-        `Fresh Start for ${nameLabel} - this will permanently delete all Smart Memory data for this character and chat.\n\nThis cannot be undone. Continue?`,
+        getMemoryScope() === memory_scopes.chat
+          ? `Fresh Start for ${nameLabel} - this will permanently delete all Smart Memory data held by this chat. Memory is chat-scoped, so the character-level store is not touched.\n\nThis cannot be undone. Continue?`
+          : `Fresh Start for ${nameLabel} - this will permanently delete all Smart Memory data for this character and chat.\n\nThis cannot be undone. Continue?`,
         POPUP_TYPE.CONFIRM,
       ))
     )

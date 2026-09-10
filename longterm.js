@@ -68,6 +68,12 @@ import {
   MAX_RETIRED_POOL,
 } from './constants.js';
 import {
+  getCharacterStore,
+  setCharacterStore,
+  deleteCharacterStore,
+  persistCharacterStores,
+} from './scope.js';
+import {
   applyGraphDefaults,
   loadCharacterEntityRegistry,
   saveCharacterEntityRegistry,
@@ -219,8 +225,7 @@ async function verifyLongtermCandidates(candidates, existing) {
  */
 export function loadCharacterMemories(characterName) {
   if (!characterName) return [];
-  const chars = extension_settings[MODULE_NAME].characters;
-  const memories = chars?.[characterName]?.memories ?? [];
+  const memories = getCharacterStore(characterName)?.memories ?? [];
   // Migrate: entries without the consolidated flag are pre-existing stable memories.
   // Entries without an importance score default to 2 (medium).
   // applyGraphDefaults is a safety net for entries that predate the one-shot
@@ -244,36 +249,32 @@ export function loadCharacterMemories(characterName) {
 }
 
 /**
- * Persists the memory array for a character into extension_settings.
- * Caller must call saveSettingsDebounced() afterwards.
+ * Persists the memory array for a character into the active memory scope.
+ * Persists the backing store itself; callers may still call
+ * saveSettingsDebounced() as before, it is harmless.
  * @param {string} characterName
  * @param {Array<{type: string, content: string, ts: number}>} memories
  */
 export function saveCharacterMemories(characterName, memories) {
   if (!characterName || !Array.isArray(memories)) return;
-  if (!extension_settings[MODULE_NAME].characters) {
-    extension_settings[MODULE_NAME].characters = {};
-  }
   // Spread the existing character object so the entity registry and any other
   // fields stored alongside memories (e.g. entities, canon) are preserved.
-  const existing = extension_settings[MODULE_NAME].characters[characterName] ?? {};
-  extension_settings[MODULE_NAME].characters[characterName] = {
+  const existing = getCharacterStore(characterName) ?? {};
+  setCharacterStore(characterName, {
     ...existing,
     memories,
     lastUpdated: Date.now(),
-  };
+  });
+  persistCharacterStores();
 }
 
 /**
- * Removes all stored memories for a character.
- * Caller must call saveSettingsDebounced() afterwards.
+ * Removes all stored memories for a character from the active memory scope.
  * @param {string} characterName
  */
 export function clearCharacterMemories(characterName) {
   if (!characterName) return;
-  if (extension_settings[MODULE_NAME].characters?.[characterName]) {
-    delete extension_settings[MODULE_NAME].characters[characterName];
-  }
+  if (deleteCharacterStore(characterName)) persistCharacterStores();
 }
 
 // ---- Relationship history storage ---------------------------------------
@@ -287,8 +288,7 @@ export function clearCharacterMemories(characterName) {
  */
 export function loadRelationshipHistory(characterName) {
   if (!characterName) return {};
-  const raw =
-    extension_settings[MODULE_NAME].characters?.[characterName]?.relationship_history ?? {};
+  const raw = getCharacterStore(characterName)?.relationship_history ?? {};
   // Normalize entries still in the old flat format { descriptors: string[], magnitude: string }
   // to the current per-descriptor format { descriptors: Array<{word, magnitude}> }.
   // This is a read-time safety net in case the schema migration did not run yet.
@@ -309,32 +309,31 @@ export function loadRelationshipHistory(characterName) {
 }
 
 /**
- * Persists a relationship history map for a character into extension_settings.
- * Caller must call saveSettingsDebounced() afterwards.
+ * Persists a relationship history map for a character into the active memory scope.
  * @param {string} characterName
  * @param {Object} history - Map of "subject→target" keys to state objects.
  */
 export function saveRelationshipHistory(characterName, history) {
   if (!characterName || typeof history !== 'object') return;
-  if (!extension_settings[MODULE_NAME].characters) {
-    extension_settings[MODULE_NAME].characters = {};
-  }
-  const existing = extension_settings[MODULE_NAME].characters[characterName] ?? {};
-  extension_settings[MODULE_NAME].characters[characterName] = {
+  const existing = getCharacterStore(characterName) ?? {};
+  setCharacterStore(characterName, {
     ...existing,
     relationship_history: history,
-  };
+  });
+  persistCharacterStores();
 }
 
 /**
- * Removes the relationship history for a character from extension_settings.
- * Caller must call saveSettingsDebounced() afterwards.
+ * Removes the relationship history for a character from the active memory scope.
  * @param {string} characterName
  */
 export function clearRelationshipHistory(characterName) {
   if (!characterName) return;
-  const char = extension_settings[MODULE_NAME].characters?.[characterName];
-  if (char) delete char.relationship_history;
+  const char = getCharacterStore(characterName);
+  if (char) {
+    delete char.relationship_history;
+    persistCharacterStores();
+  }
 }
 
 // ---- Formatting ---------------------------------------------------------

@@ -57,6 +57,7 @@ import {
   estimateTokens,
   generateMemoryId,
 } from './constants.js';
+import { getCharacterStore, setCharacterStore, persistCharacterStores } from './scope.js';
 import { buildEpistemicExtractionPrompt } from './prompts.js';
 import { parseEpistemicResponse, parseEpistemicRetireIndices } from './parsers.js';
 import { getSceneParticipants } from './scenes.js';
@@ -166,7 +167,7 @@ export function isEpistemicEnabled() {
  */
 export function loadEpistemicKnowledge(characterName) {
   if (!characterName) return [];
-  return extension_settings[MODULE_NAME]?.characters?.[characterName]?.epistemic_knowledge ?? [];
+  return getCharacterStore(characterName)?.epistemic_knowledge ?? [];
 }
 
 /**
@@ -178,11 +179,9 @@ export function loadEpistemicKnowledge(characterName) {
  */
 export function saveEpistemicKnowledge(characterName, entries) {
   if (!characterName || !Array.isArray(entries)) return;
-  const s = extension_settings[MODULE_NAME];
-  if (!s.characters) s.characters = {};
-  const existing = s.characters[characterName] ?? {};
-  s.characters[characterName] = { ...existing, epistemic_knowledge: entries };
-  saveSettingsDebounced();
+  const existing = getCharacterStore(characterName) ?? {};
+  setCharacterStore(characterName, { ...existing, epistemic_knowledge: entries });
+  persistCharacterStores();
 }
 
 /**
@@ -193,10 +192,10 @@ export function saveEpistemicKnowledge(characterName, entries) {
  */
 export function clearEpistemicKnowledge(characterName) {
   if (!characterName) return;
-  const s = extension_settings[MODULE_NAME];
-  if (!s.characters?.[characterName]) return;
-  s.characters[characterName].epistemic_knowledge = [];
-  saveSettingsDebounced();
+  const store = getCharacterStore(characterName);
+  if (!store) return;
+  store.epistemic_knowledge = [];
+  persistCharacterStores();
 }
 
 // ---- Deduplication ----------------------------------------------------------

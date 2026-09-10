@@ -57,6 +57,13 @@ import {
 import { generateMemoryExtract } from './generate.js';
 import { getContext, extension_settings } from '../../../extensions.js';
 import { estimateTokens, MODULE_NAME, META_KEY, PROMPT_KEY_ARCS } from './constants.js';
+import {
+  getCharacterStore,
+  setCharacterStore,
+  persistCharacterStores,
+  getGroupArcs,
+  setGroupArcs,
+} from './scope.js';
 import { buildArcExtractionPrompt, buildArcSummaryPrompt } from './prompts.js';
 import { parseArcOutput } from './parsers.js';
 import { loadSceneHistory } from './scenes.js';
@@ -274,7 +281,7 @@ export async function clearArcSummaries() {
  */
 export function loadPersistentArcs(characterName) {
   if (!characterName) return [];
-  return extension_settings[MODULE_NAME]?.characters?.[characterName]?.persistent_arcs ?? [];
+  return getCharacterStore(characterName)?.persistent_arcs ?? [];
 }
 
 /**
@@ -284,12 +291,10 @@ export function loadPersistentArcs(characterName) {
  */
 export function savePersistentArcs(characterName, arcs) {
   if (!characterName) return;
-  if (!extension_settings[MODULE_NAME]) extension_settings[MODULE_NAME] = {};
-  if (!extension_settings[MODULE_NAME].characters) extension_settings[MODULE_NAME].characters = {};
-  if (!extension_settings[MODULE_NAME].characters[characterName])
-    extension_settings[MODULE_NAME].characters[characterName] = {};
-  extension_settings[MODULE_NAME].characters[characterName].persistent_arcs = arcs;
-  saveSettingsDebounced();
+  const store = getCharacterStore(characterName, { create: true });
+  store.persistent_arcs = arcs;
+  setCharacterStore(characterName, store);
+  persistCharacterStores();
 }
 
 /**
@@ -300,8 +305,7 @@ export function savePersistentArcs(characterName, arcs) {
  * @returns {Array<{content: string, ts: number, persistent: true}>}
  */
 export function loadGroupPersistentArcs(groupId) {
-  if (!groupId) return [];
-  return extension_settings[MODULE_NAME]?.group_arcs?.[groupId] ?? [];
+  return getGroupArcs(groupId);
 }
 
 /**
@@ -310,11 +314,7 @@ export function loadGroupPersistentArcs(groupId) {
  * @param {Array<{content: string, ts: number, persistent: true}>} arcs
  */
 export function saveGroupPersistentArcs(groupId, arcs) {
-  if (!groupId) return;
-  if (!extension_settings[MODULE_NAME]) extension_settings[MODULE_NAME] = {};
-  if (!extension_settings[MODULE_NAME].group_arcs) extension_settings[MODULE_NAME].group_arcs = {};
-  extension_settings[MODULE_NAME].group_arcs[groupId] = arcs;
-  saveSettingsDebounced();
+  setGroupArcs(groupId, arcs);
 }
 
 /**

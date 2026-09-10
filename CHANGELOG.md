@@ -32,6 +32,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Configurable per-type acceptance cap.** The number of new long-term entries
   accepted per type per pass can be set explicitly; 0 keeps the profile default.
 
+- **Chat-scoped memory.** A new Memory scope setting chooses where the
+  persistent tiers live. Character scope is the original behaviour: long-term
+  memories, relationship history, canon, pinned arcs, the entity registry, and
+  Perspectives & Secrets follow the character into every chat. Chat scope keeps
+  them in chat metadata instead, so a new chat with the same character starts
+  empty, branches and checkpoints inherit what the parent chat knew, and nothing
+  crosses between chats unless you press Carry over from character. Promote to
+  character copies a chat's store the other way. Switching scope moves and
+  deletes nothing.
+
 ### Changed
 
 - Slider ceilings raised for hosted models: memory context budget to 32,000

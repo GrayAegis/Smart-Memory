@@ -43,6 +43,7 @@ import {
 import { generateMemoryExtract } from './generate.js';
 import { extension_settings } from '../../../extensions.js';
 import { estimateTokens, MODULE_NAME, PROMPT_KEY_CANON } from './constants.js';
+import { getCharacterStore, setCharacterStore, persistCharacterStores } from './scope.js';
 import { buildCanonSummaryPrompt } from './prompts.js';
 import { loadCharacterMemories } from './longterm.js';
 import { loadArcSummaries } from './arcs.js';
@@ -60,7 +61,7 @@ import { reportTierTrimStats } from './trim-stats.js';
  */
 export function loadCanon(characterName) {
   if (!characterName) return null;
-  return extension_settings[MODULE_NAME]?.characters?.[characterName]?.canon ?? null;
+  return getCharacterStore(characterName)?.canon ?? null;
 }
 
 /**
@@ -73,15 +74,12 @@ export function loadCanon(characterName) {
  */
 export function saveCanon(characterName, text) {
   if (!characterName || !text) return;
-  if (!extension_settings[MODULE_NAME].characters) {
-    extension_settings[MODULE_NAME].characters = {};
-  }
-  const existing = extension_settings[MODULE_NAME].characters[characterName] ?? {};
-  extension_settings[MODULE_NAME].characters[characterName] = {
+  const existing = getCharacterStore(characterName) ?? {};
+  setCharacterStore(characterName, {
     ...existing,
     canon: { text, ts: Date.now() },
-  };
-  saveSettingsDebounced();
+  });
+  persistCharacterStores();
 }
 
 /**
@@ -91,10 +89,10 @@ export function saveCanon(characterName, text) {
  */
 export function clearCanon(characterName) {
   if (!characterName) return;
-  const char = extension_settings[MODULE_NAME]?.characters?.[characterName];
+  const char = getCharacterStore(characterName);
   if (char) {
     delete char.canon;
-    saveSettingsDebounced();
+    persistCharacterStores();
   }
   setExtensionPrompt(PROMPT_KEY_CANON, '', extension_prompt_types.NONE, 0);
   invalidateUnifiedCache(PROMPT_KEY_CANON);

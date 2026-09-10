@@ -46,6 +46,7 @@
 import { saveSettingsDebounced } from '../../../../script.js';
 import { getContext, extension_settings } from '../../../extensions.js';
 import { MODULE_NAME, META_KEY, SCHEMA_VERSION, generateMemoryId } from './constants.js';
+import { getCharacterStore, setCharacterStore, persistCharacterStores } from './scope.js';
 import { smLog } from './logging.js';
 
 // ---- Graph defaults ---------------------------------------------------------
@@ -100,7 +101,7 @@ export function applyGraphDefaults(mem) {
  */
 export function loadCharacterEntityRegistry(characterName) {
   if (!characterName) return [];
-  return extension_settings[MODULE_NAME]?.characters?.[characterName]?.entities ?? [];
+  return getCharacterStore(characterName)?.entities ?? [];
 }
 
 /**
@@ -115,14 +116,12 @@ export function loadCharacterEntityRegistry(characterName) {
  */
 export function saveCharacterEntityRegistry(characterName, entities) {
   if (!characterName || !Array.isArray(entities)) return;
-  if (!extension_settings[MODULE_NAME].characters) {
-    extension_settings[MODULE_NAME].characters = {};
-  }
-  const existing = extension_settings[MODULE_NAME].characters[characterName] ?? {};
-  extension_settings[MODULE_NAME].characters[characterName] = {
+  const existing = getCharacterStore(characterName) ?? {};
+  setCharacterStore(characterName, {
     ...existing,
     entities,
-  };
+  });
+  persistCharacterStores();
 }
 
 // ---- Entity registry: session-scoped (chatMetadata) -------------------------
@@ -998,19 +997,18 @@ function applyMigrations(container, steps) {
  */
 export function ensureCharacterMigrated(characterName) {
   if (!characterName) return false;
-  const settings = extension_settings[MODULE_NAME];
-  if (!settings) return false;
 
-  const charData = settings.characters?.[characterName];
+  // The store may live in extension_settings or in chat metadata depending on
+  // the memory scope; the scope helpers hide that.
+  const charData = getCharacterStore(characterName);
   if (!charData) return false;
 
   if ((charData.schema_version ?? 0) >= SCHEMA_VERSION) return false;
 
   smLog(`[SmartMemory] Migrating character "${characterName}" to schema v${SCHEMA_VERSION}...`);
   const migrated = applyMigrations(charData, CHARACTER_MIGRATIONS);
-  if (!settings.characters) settings.characters = {};
-  settings.characters[characterName] = migrated;
-  saveSettingsDebounced();
+  setCharacterStore(characterName, migrated);
+  persistCharacterStores();
 
   smLog(`[SmartMemory] Character "${characterName}" migration complete.`);
   return true;
